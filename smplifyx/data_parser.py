@@ -44,7 +44,10 @@ Keypoints.__new__.__defaults__ = (None,) * len(Keypoints._fields)
 
 def create_dataset(dataset='openpose', data_folder='data', **kwargs):
     if dataset.lower() == 'openpose':
-        return OpenPose(data_folder, **kwargs)
+        if kwargs['model_type'] == 'mano':
+            return OpenPoseMano(data_folder, **kwargs)
+        else:
+            return OpenPose(data_folder, **kwargs)
     else:
         raise ValueError('Unknown dataset: {}'.format(dataset))
 
@@ -59,13 +62,20 @@ def read_keypoints(keypoint_fn, use_hands=True, use_face=True,
     gender_pd = []
     gender_gt = []
     for idx, person_data in enumerate(data['people']):
-        body_keypoints = np.array(person_data['pose_keypoints_2d'],
-                                  dtype=np.float32)
+        # body_keypoints = np.array(person_data['pose_keypoints_2d'],dtype=np.float32)
+
+        # Custom
+        body_keypoints = np.zeros((25,3), dtype=np.float32)
+
         body_keypoints = body_keypoints.reshape([-1, 3])
         if use_hands:
-            left_hand_keyp = np.array(
-                person_data['hand_left_keypoints_2d'],
-                dtype=np.float32).reshape([-1, 3])
+            # left_hand_keyp = np.array(person_data['hand_left_keypoints_2d'], dtype=np.float32).reshape([-1, 3])
+            # Custom
+
+            left_hand_keyp = np.zeros((21,3), dtype=np.float32)
+
+            # index 46 to 66
+            # 0,1,5,9,13,17
             right_hand_keyp = np.array(
                 person_data['hand_right_keypoints_2d'],
                 dtype=np.float32).reshape([-1, 3])
@@ -100,6 +110,25 @@ def read_keypoints(keypoint_fn, use_hands=True, use_face=True,
                      gender_gt=gender_gt)
 
 
+def read_hand_keypoints(keypoint_fn):
+    with open(keypoint_fn) as keypoint_file:
+        data = json.load(keypoint_file)
+
+    keypoints = []
+
+    gender_pd = []
+    gender_gt = []
+    for idx, person_data in enumerate(data['people']):
+        right_hand_keyp = np.array(
+                person_data['hand_right_keypoints_2d'],
+                dtype=np.float32).reshape([-1, 3])
+        
+        keypoints.append(right_hand_keyp)
+
+    return Keypoints(keypoints=keypoints, gender_pd=gender_pd,
+                     gender_gt=gender_gt)
+
+
 class OpenPose(Dataset):
 
     NUM_BODY_JOINTS = 25
@@ -126,8 +155,7 @@ class OpenPose(Dataset):
 
         self.openpose_format = openpose_format
 
-        self.num_joints = (self.NUM_BODY_JOINTS +
-                           2 * self.NUM_HAND_JOINTS * use_hands)
+        self.num_joints = (self.NUM_BODY_JOINTS +2 * self.NUM_HAND_JOINTS * use_hands)
 
         self.img_folder = osp.join(data_folder, img_folder)
         self.keyp_folder = osp.join(data_folder, keyp_folder)
@@ -159,6 +187,9 @@ class OpenPose(Dataset):
                                 17 * self.use_face_contour,
                                 dtype=np.float32)
 
+        # Custom
+        # optim_weights[25:46] = 0.
+
         # Neck, Left and right hip
         # These joints are ignored because SMPL has no neck joint and the
         # annotation of the hips is ambiguous.
@@ -183,6 +214,100 @@ class OpenPose(Dataset):
         keyp_tuple = read_keypoints(keypoint_fn, use_hands=self.use_hands,
                                     use_face=self.use_face,
                                     use_face_contour=self.use_face_contour)
+
+        if len(keyp_tuple.keypoints) < 1:
+            return {}
+        keypoints = np.stack(keyp_tuple.keypoints)
+
+        output_dict = {'fn': img_fn,
+                       'img_path': img_path,
+                       'keypoints': keypoints, 'img': img}
+        if keyp_tuple.gender_gt is not None:
+            if len(keyp_tuple.gender_gt) > 0:
+                output_dict['gender_gt'] = keyp_tuple.gender_gt
+        if keyp_tuple.gender_pd is not None:
+            if len(keyp_tuple.gender_pd) > 0:
+                output_dict['gender_pd'] = keyp_tuple.gender_pd
+        return output_dict
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if self.cnt >= len(self.img_paths):
+            raise StopIteration
+
+        img_path = self.img_paths[self.cnt]
+        self.cnt += 1
+
+        return self.read_item(img_path)
+
+
+class OpenPoseMano(Dataset):
+
+    def __init__(self, data_folder, img_folder='images',
+                 keyp_folder='keypoints',
+                 use_hands=False,
+                 dtype=torch.float32,
+                 model_type='mano',
+                 joints_to_ign=None,
+                 openpose_format='coco25',
+                 **kwargs):
+        super(OpenPoseMano, self).__init__()
+
+        self.model_type = model_type
+        self.dtype = dtype
+        self.joints_to_ign = joints_to_ign
+        self.openpose_format = openpose_format
+
+        self.num_joints = 21 
+
+        self.img_folder = osp.join(data_folder, img_folder)
+        self.keyp_folder = osp.join(data_folder, keyp_folder)
+
+        self.img_paths = [osp.join(self.img_folder, img_fn)
+                          for img_fn in os.listdir(self.img_folder)
+                          if img_fn.endswith('.png') or
+                          img_fn.endswith('.jpg') and
+                          not img_fn.startswith('.')]
+        self.img_paths = sorted(self.img_paths)
+        self.cnt = 0
+
+    def get_model2data(self):
+        return smpl_to_openpose(self.model_type, use_hands=True,
+                                use_face=False,
+                                use_face_contour=False,
+                                openpose_format=self.openpose_format)
+
+    def get_joint_weights(self):
+        # The weights for the joint terms in the optimization
+        optim_weights = np.ones(self.num_joints, dtype=np.float32)
+
+        # Neck, Left and right hip
+        # These joints are ignored because SMPL has no neck joint and the
+        # annotation of the hips is ambiguous.
+        # if self.joints_to_ign is not None and -1 not in self.joints_to_ign:
+        #     optim_weights[self.joints_to_ign] = 0.
+        return torch.tensor(optim_weights, dtype=self.dtype)
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.img_paths[idx]
+        return self.read_item(img_path)
+
+    def read_item(self, img_path):
+        img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
+        img_fn = osp.split(img_path)[1]
+        img_fn, _ = osp.splitext(osp.split(img_path)[1])
+
+        keypoint_fn = osp.join(self.keyp_folder,
+                               img_fn + '_keypoints.json')
+        keyp_tuple = read_hand_keypoints(keypoint_fn)
 
         if len(keyp_tuple.keypoints) < 1:
             return {}

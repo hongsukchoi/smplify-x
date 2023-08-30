@@ -31,6 +31,7 @@ import torch.nn as nn
 
 from mesh_viewer import MeshViewer
 import utils
+from vis import vis_3d_skeleton
 
 
 @torch.no_grad()
@@ -55,7 +56,7 @@ def guess_init(model,
         edge_idxs: list of lists
             A list of pairs, each of which represents a limb used to estimate
             the camera translation
-        focal_length: float, optional (default = 5000)
+        focal_length: tuple, float, optional (default = 5000)
             The focal length of the camera
         pose_embedding: torch.tensor 1x32
             The tensor that contains the embedding of V-Poser that is used to
@@ -71,17 +72,23 @@ def guess_init(model,
 
     '''
 
-    body_pose = vposer.decode(
-        pose_embedding, output_type='aa').view(1, -1) if use_vposer else None
-    if use_vposer and model_type == 'smpl':
-        wrist_pose = torch.zeros([body_pose.shape[0], 6],
-                                 dtype=body_pose.dtype,
-                                 device=body_pose.device)
-        body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+    if model_type != 'mano':
+        body_pose = vposer.decode(
+            pose_embedding, output_type='aa').view(1, -1) if use_vposer else None
+        if use_vposer and model_type == 'smpl':
+            wrist_pose = torch.zeros([body_pose.shape[0], 6],
+                                    dtype=body_pose.dtype,
+                                    device=body_pose.device)
+            body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+    else:
+        body_pose = None
 
-    output = model(body_pose=body_pose, return_verts=False,
-                   return_full_pose=False)
+    output = model(body_pose=body_pose, return_verts=True, return_full_pose=False)
     joints_3d = output.joints
+
+    # tmp = joints_3d[0].cpu().numpy()
+    # tmp_vis = np.ones_like(tmp[:, :1])
+    # vis_3d_skeleton(tmp, tmp_vis)
     joints_2d = joints_2d.to(device=joints_3d.device)
 
     diff3d = []
@@ -98,6 +105,9 @@ def guess_init(model,
 
     height2d = length_2d.mean(dim=1)
     height3d = length_3d.mean(dim=1)
+    
+    # custom
+    focal_length = (focal_length[0] + focal_length[1]) / 2
 
     est_d = focal_length * (height3d / height2d)
 
@@ -230,19 +240,23 @@ class FittingMonitor(object):
             if backward:
                 optimizer.zero_grad()
 
-            body_pose = vposer.decode(
-                pose_embedding, output_type='aa').view(
-                    1, -1) if use_vposer else None
+            if self.model_type != 'mano':
+                body_pose = vposer.decode(
+                    pose_embedding, output_type='aa').view(
+                        1, -1) if use_vposer else None
 
-            if append_wrists:
-                wrist_pose = torch.zeros([body_pose.shape[0], 6],
-                                         dtype=body_pose.dtype,
-                                         device=body_pose.device)
-                body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+                if append_wrists:
+                    wrist_pose = torch.zeros([body_pose.shape[0], 6],
+                                            dtype=body_pose.dtype,
+                                            device=body_pose.device)
+                    body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+            else:
+                body_pose = None
 
             body_model_output = body_model(return_verts=return_verts,
                                            body_pose=body_pose,
                                            return_full_pose=return_full_pose)
+
             total_loss = loss(body_model_output, camera=camera,
                               gt_joints=gt_joints,
                               body_model_faces=faces_tensor,
@@ -304,6 +318,7 @@ class SMPLifyLoss(nn.Module):
 
         super(SMPLifyLoss, self).__init__()
 
+        self.model_type = kwargs['model_type']
         self.use_joints_conf = use_joints_conf
         self.angle_prior = angle_prior
 
@@ -378,37 +393,48 @@ class SMPLifyLoss(nn.Module):
         joint_loss = (torch.sum(weights ** 2 * joint_diff) *
                       self.data_weight ** 2)
 
+        pprior_loss = 0.0
         # Calculate the loss from the Pose prior
-        if use_vposer:
-            pprior_loss = (pose_embedding.pow(2).sum() *
-                           self.body_pose_weight ** 2)
-        else:
-            pprior_loss = torch.sum(self.body_pose_prior(
-                body_model_output.body_pose,
-                body_model_output.betas)) * self.body_pose_weight ** 2
+        if self.model_type != 'mano':
+            if use_vposer:
+                pprior_loss = (pose_embedding.pow(2).sum() *
+                            self.body_pose_weight ** 2)
+            else:
+                pprior_loss = torch.sum(self.body_pose_prior(
+                    body_model_output.body_pose,
+                    body_model_output.betas)) * self.body_pose_weight ** 2
 
         shape_loss = torch.sum(self.shape_prior(
             body_model_output.betas)) * self.shape_weight ** 2
-        # Calculate the prior over the joint rotations. This a heuristic used
-        # to prevent extreme rotation of the elbows and knees
-        body_pose = body_model_output.full_pose[:, 3:66]
-        angle_prior_loss = torch.sum(
-            self.angle_prior(body_pose)) * self.bending_prior_weight
+
+        angle_prior_loss = 0.0
+        if self.model_type != 'mano':
+            # Calculate the prior over the joint rotations. This a heuristic used
+            # to prevent extreme rotation of the elbows and knees
+            body_pose = body_model_output.full_pose[:, 3:66]
+            angle_prior_loss = torch.sum(
+                self.angle_prior(body_pose)) * self.bending_prior_weight
 
         # Apply the prior on the pose space of the hand
         left_hand_prior_loss, right_hand_prior_loss = 0.0, 0.0
-        if self.use_hands and self.left_hand_prior is not None:
-            left_hand_prior_loss = torch.sum(
-                self.left_hand_prior(
-                    body_model_output.left_hand_pose)) * \
-                self.hand_prior_weight ** 2
+        # custom
+        # if self.use_hands and self.left_hand_prior is not None:
+        #     left_hand_prior_loss = torch.sum(
+        #         self.left_hand_prior(
+        #             body_model_output.left_hand_pose)) * \
+        #         self.hand_prior_weight ** 2
 
-        if self.use_hands and self.right_hand_prior is not None:
+        # if self.use_hands and self.right_hand_prior is not None:
+        #     right_hand_prior_loss = torch.sum(
+        #         self.right_hand_prior(
+        #             body_model_output.right_hand_pose)) * \
+        #         self.hand_prior_weight ** 2
+        if self.model_type == 'mano':
             right_hand_prior_loss = torch.sum(
                 self.right_hand_prior(
-                    body_model_output.right_hand_pose)) * \
+                    body_model_output.hand_pose)) * \
                 self.hand_prior_weight ** 2
-
+        
         expression_loss = 0.0
         jaw_prior_loss = 0.0
         if self.use_face:
@@ -487,11 +513,11 @@ class SMPLifyCameraInitLoss(nn.Module):
                 **kwargs):
 
         projected_joints = camera(body_model_output.joints)
-
+        
         joint_error = torch.pow(
             torch.index_select(gt_joints, 1, self.init_joints_idxs) -
             torch.index_select(projected_joints, 1, self.init_joints_idxs),
-            2)
+        2)
         joint_loss = torch.sum(joint_error) * self.data_weight ** 2
 
         depth_loss = 0.0
@@ -499,5 +525,5 @@ class SMPLifyCameraInitLoss(nn.Module):
                 None):
             depth_loss = self.depth_loss_weight ** 2 * torch.sum((
                 camera.translation[:, 2] - self.trans_estimation[:, 2]).pow(2))
-
+        
         return joint_loss + depth_loss

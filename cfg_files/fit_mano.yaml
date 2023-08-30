@@ -14,8 +14,9 @@ model_type: 'mano'
 use_cuda: True
 float_dtype: "float32"
 use_joints_conf: True
-use_pca: True
+use_pca: False
 use_hands: True
+is_rhand: True
 use_face: False
 flat_hand_mean: False
 # The number of mixture components for the pose prior
@@ -91,13 +92,13 @@ hand_joints_weights:
     - 1.0
     - 1.0
     - 1.0
-    - 1.0
+    - 2.0
 face_joints_weights:
     - 0.0
     - 0.0
     - 0.0
     - 0.0
-    - 0.0
+    - 2.0
 
 use_vposer: False
 vposer_ckpt: "vposer"

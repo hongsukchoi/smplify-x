@@ -29,6 +29,7 @@ except ImportError:
 import sys
 import os
 import os.path as osp
+import copy
 
 import numpy as np
 import torch
@@ -189,11 +190,11 @@ def fit_single_frame(img,
         vposer = vposer.to(device=device)
         vposer.eval()
 
-    if use_vposer:
-        body_mean_pose = torch.zeros([batch_size, vposer_latent_dim],
-                                     dtype=dtype)
-    else:
-        body_mean_pose = body_pose_prior.get_mean().detach().cpu()
+    # if use_vposer:
+    #     body_mean_pose = torch.zeros([batch_size, vposer_latent_dim],
+    #                                  dtype=dtype)
+    # else:
+    #     body_mean_pose = body_pose_prior.get_mean().detach().cpu()
 
     keypoint_data = torch.tensor(keypoints, dtype=dtype)
     gt_joints = keypoint_data[:, :, :2]
@@ -266,13 +267,41 @@ def fit_single_frame(img,
     # The indices of the joints used for the initialization of the camera
     init_joints_idxs = torch.tensor(init_joints_idxs, device=device)
 
-    edge_indices = kwargs.get('body_tri_idxs')
+    if kwargs.get('model_type') != 'mano':
+        edge_indices = kwargs.get('body_tri_idxs')
+    else:
+        from constant import mano_skeleton
+        # edge_indices = kwargs.get('hand_tri_idxs')
+
+        # sample edge_indices based on joint confidence
+        thr = 0.5
+        joints_conf_list = joints_conf[0].cpu().numpy().tolist()
+        while thr > 0.05:
+            edge_indices = []
+            init_joints_idxs = set()
+            for line in mano_skeleton:
+                kp1, kp2 = line[0], line[1]
+                # batch_size 1
+                if joints_conf_list[kp1] > thr and joints_conf_list[kp2] > thr:
+                    edge_indices.append(line)
+                    init_joints_idxs.add(kp1)
+                    init_joints_idxs.add(kp2)
+
+            if len(edge_indices) > 2:
+                break
+            thr -= 0.1
+            
+        if len(edge_indices) < 1:
+            import pdb; pdb.set_trace() # skip?
+        else:
+            init_joints_idxs = torch.tensor(list(init_joints_idxs), device=device)
+
+
     init_t = fitting.guess_init(body_model, gt_joints, edge_indices,
                                 use_vposer=use_vposer, vposer=vposer,
                                 pose_embedding=pose_embedding,
                                 model_type=kwargs.get('model_type', 'smpl'),
-                                focal_length=focal_length, dtype=dtype)
-
+                                focal_length=(camera.focal_length_x, camera.focal_length_y), dtype=dtype)
     camera_loss = fitting.create_loss('camera_init',
                                       trans_estimation=init_t,
                                       init_joints_idxs=init_joints_idxs,
@@ -315,14 +344,18 @@ def fit_single_frame(img,
 
         # Reset the parameters to estimate the initial translation of the
         # body model
-        body_model.reset_params(body_pose=body_mean_pose)
+        # body_model.reset_params(body_pose=body_mean_pose)
 
         # If the distance between the 2D shoulders is smaller than a
         # predefined threshold then try 2 fits, the initial one and a 180
         # degree rotation
-        shoulder_dist = torch.dist(gt_joints[:, left_shoulder_idx],
-                                   gt_joints[:, right_shoulder_idx])
-        try_both_orient = shoulder_dist.item() < side_view_thsh
+        if kwargs.get('model_type') != 'mano':
+            shoulder_dist = torch.dist(gt_joints[:, left_shoulder_idx],
+                                    gt_joints[:, right_shoulder_idx])
+            try_both_orient = shoulder_dist.item() < side_view_thsh
+        else:
+            # custom
+            try_both_orient = True
 
         # Update the value of the translation of the camera as well as
         # the image center.
@@ -330,6 +363,7 @@ def fit_single_frame(img,
             camera.translation[:] = init_t.view_as(camera.translation)
             camera.center[:] = torch.tensor([W, H], dtype=dtype) * 0.5
 
+        print("CHECK camera: ", camera.translation)
         # Re-enable gradient calculation for the camera translation
         camera.translation.requires_grad = True
 
@@ -345,7 +379,7 @@ def fit_single_frame(img,
             camera_loss, create_graph=camera_create_graph,
             use_vposer=use_vposer, vposer=vposer,
             pose_embedding=pose_embedding,
-            return_full_pose=False, return_verts=False)
+            return_full_pose=False, return_verts=True)
 
         # Step 1: Optimize over the torso joints the camera translation
         # Initialize the computational graph by feeding the initial translation
@@ -385,20 +419,23 @@ def fit_single_frame(img,
         # store here the final error for both orientations,
         # and pick the orientation resulting in the lowest error
         results = []
+        body_model_list = []
 
         # Step 2: Optimize the full model
         final_loss_val = 0
         for or_idx, orient in enumerate(tqdm(orientations, desc='Orientation')):
             opt_start = time.time()
 
-            new_params = defaultdict(global_orient=orient,
-                                     body_pose=body_mean_pose)
-            body_model.reset_params(**new_params)
+            # new_params = defaultdict(global_orient=orient,
+            #                          body_pose=body_mean_pose)
+            new_params = defaultdict(global_orient=orient)
+            body_model.reset_params(**new_params) # if not designated, reset to zreo
             if use_vposer:
                 with torch.no_grad():
                     pose_embedding.fill_(0)
-
+            
             for opt_idx, curr_weights in enumerate(tqdm(opt_weights, desc='Stage')):
+
 
                 body_params = list(body_model.parameters())
 
@@ -450,6 +487,7 @@ def fit_single_frame(img,
                     if interactive:
                         tqdm.write('Stage {:03d} done after {:.4f} seconds'.format(
                             opt_idx, elapsed))
+                        
 
             if interactive:
                 if use_cuda and torch.cuda.is_available():
@@ -473,6 +511,7 @@ def fit_single_frame(img,
 
             results.append({'loss': final_loss_val,
                             'result': result})
+            body_model_list.append(copy.deepcopy(body_model))
 
         with open(result_fn, 'wb') as result_file:
             if len(results) > 1:
@@ -481,6 +520,7 @@ def fit_single_frame(img,
             else:
                 min_idx = 0
             pickle.dump(results[min_idx]['result'], result_file, protocol=2)
+            body_model = body_model_list[min_idx]
 
     if save_meshes or visualize:
         body_pose = vposer.decode(
@@ -490,10 +530,10 @@ def fit_single_frame(img,
         model_type = kwargs.get('model_type', 'smpl')
         append_wrists = model_type == 'smpl' and use_vposer
         if append_wrists:
-                wrist_pose = torch.zeros([body_pose.shape[0], 6],
-                                         dtype=body_pose.dtype,
-                                         device=body_pose.device)
-                body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+            wrist_pose = torch.zeros([body_pose.shape[0], 6],
+                                        dtype=body_pose.dtype,
+                                        device=body_pose.device)
+            body_pose = torch.cat([body_pose, wrist_pose], dim=1)
 
         model_output = body_model(return_verts=True, body_pose=body_pose)
         vertices = model_output.vertices.detach().cpu().numpy().squeeze()
@@ -523,7 +563,7 @@ def fit_single_frame(img,
 
         camera_center = camera.center.detach().cpu().numpy().squeeze()
         camera_transl = camera.translation.detach().cpu().numpy().squeeze()
-        # Equivalent to 180 degrees around the y-axis. Transforms the fit to
+        # Equivalent to 180 degrees around the x-axis. Transforms the fit to
         # OpenGL compatible coordinate system.
         camera_transl[0] *= -1.0
 
@@ -531,7 +571,7 @@ def fit_single_frame(img,
         camera_pose[:3, 3] = camera_transl
 
         camera = pyrender.camera.IntrinsicsCamera(
-            fx=focal_length, fy=focal_length,
+            fx=camera.focal_length_x.detach().cpu().numpy().squeeze(), fy=camera.focal_length_y.detach().cpu().numpy().squeeze(),
             cx=camera_center[0], cy=camera_center[1])
         scene.add(camera, pose=camera_pose)
 
@@ -548,8 +588,9 @@ def fit_single_frame(img,
 
         valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
         input_img = img.detach().cpu().numpy()
-        output_img = (color[:, :, :-1] * valid_mask +
-                      (1 - valid_mask) * input_img)
+        output_img = (color[:, :, :-1] * valid_mask + (1 - valid_mask) * input_img)
 
         img = pil_img.fromarray((output_img * 255).astype(np.uint8))
         img.save(out_img_fn)
+        import pdb; pdb.set_trace()
+        print('check visualization')

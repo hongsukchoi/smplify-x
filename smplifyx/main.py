@@ -122,8 +122,12 @@ def main(**args):
 
     # Create the camera object
     focal_length = args.get('focal_length')
-    camera = create_camera(focal_length_x=focal_length,
-                           focal_length_y=focal_length,
+    # Custom
+    focal_length_x = 425.4889026887061
+    focal_length_y = 430.7943259159451
+    
+    camera = create_camera(focal_length_x=focal_length_x,
+                           focal_length_y=focal_length_y,
                            dtype=dtype,
                            **args)
 
@@ -260,6 +264,7 @@ def main(**args):
                              jaw_prior=jaw_prior,
                              angle_prior=angle_prior,
                              **args)
+        import pdb; pdb.set_trace()
 
     elapsed = time.time() - start
     time_msg = time.strftime('%H hours, %M minutes, %S seconds',

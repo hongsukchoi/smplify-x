@@ -95,7 +95,7 @@ def parse_config(argv=None):
     parser.add_argument('--float_dtype', type=str, default='float32',
                         help='The types of floats used')
     parser.add_argument('--model_type', default='smpl', type=str,
-                        choices=['smpl', 'smplh', 'smplx'],
+                        choices=['mano', 'smpl', 'smplh', 'smplx'],
                         help='The type of the model that we will fit to the' +
                         ' data.')
     parser.add_argument('--camera_type', type=str, default='persp',
@@ -164,11 +164,19 @@ def parse_config(argv=None):
                         help='The path to the V-Poser checkpoint')
     # Left/Right shoulder and hips
     parser.add_argument('--init_joints_idxs', nargs='*', type=int,
-                        default=[9, 12, 2, 5],
+                        default=[0, 2, 5, 13, 17],# [1, 2, 5, 9, 13, 17],  # [9, 12, 2, 5],
                         help='Which joints to use for initializing the camera')
     parser.add_argument('--body_tri_idxs', nargs='*',
                         #  default='5.12,2.9',
                         default=[5, 12, 2, 9],
+                        type=int,
+                        help='The indices of the joints used to estimate' +
+                        ' the initial depth of the camera. The format' +
+                        ' should be vIdx1 vIdx2 vIdx3 vIdx4')
+    parser.add_argument('--hand_tri_idxs', nargs='*',
+                        #  default='5.12,2.9',
+                        # default=[1, 2, 5, 9, 13, 17],
+                        default=[0, 2, 0, 13],
                         type=int,
                         help='The indices of the joints used to estimate' +
                         ' the initial depth of the camera. The format' +
@@ -253,6 +261,10 @@ def parse_config(argv=None):
                         type=lambda x: x.lower() in ['true', '1'],
                         help='Use the hand keypoints in the SMPL' +
                         'optimization process')
+    parser.add_argument('--is_rhand', default=False,
+                        type=lambda x: x.lower() in ['true', '1'],
+                        help='Use the hand keypoints in the SMPL' +
+                        'optimization process')
     parser.add_argument('--use_face', default=False,
                         type=lambda x: x.lower() in ['true', '1'],
                         help='Use the facial keypoints in the optimization' +
@@ -293,4 +305,12 @@ def parse_config(argv=None):
         (args_dict['body_tri_idxs'][ii], args_dict['body_tri_idxs'][jj])
         for ii, jj in zip(range(0, num_tri_idxs, 2), range(1, num_tri_idxs, 2))
     ]
+
+    num_tri_idxs = len(args_dict['hand_tri_idxs'])
+    # Convert the list of indices to a list of pairs
+    args_dict['hand_tri_idxs'] = [
+        (args_dict['hand_tri_idxs'][ii], args_dict['hand_tri_idxs'][jj])
+        for ii, jj in zip(range(0, num_tri_idxs, 2), range(1, num_tri_idxs, 2))
+    ]
+
     return args_dict
