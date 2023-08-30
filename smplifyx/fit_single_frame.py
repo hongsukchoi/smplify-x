@@ -33,6 +33,8 @@ import copy
 
 import numpy as np
 import torch
+from mesh_viewer import MeshViewer
+
 
 from tqdm import tqdm
 
@@ -48,6 +50,7 @@ from human_body_prior.tools.model_loader import load_vposer
 
 
 def fit_single_frame(img,
+                     depth,
                      keypoints,
                      body_model,
                      camera,
@@ -287,21 +290,39 @@ def fit_single_frame(img,
                     init_joints_idxs.add(kp1)
                     init_joints_idxs.add(kp2)
 
-            if len(edge_indices) > 2:
+            if len(edge_indices) > 5:
                 break
             thr -= 0.1
             
         if len(edge_indices) < 1:
-            import pdb; pdb.set_trace() # skip?
+            print("///////// Skip /////////")
+            return # skip?
         else:
             init_joints_idxs = torch.tensor(list(init_joints_idxs), device=device)
 
 
-    init_t = fitting.guess_init(body_model, gt_joints, edge_indices,
-                                use_vposer=use_vposer, vposer=vposer,
-                                pose_embedding=pose_embedding,
-                                model_type=kwargs.get('model_type', 'smpl'),
-                                focal_length=(camera.focal_length_x, camera.focal_length_y), dtype=dtype)
+    use_depth = True
+    if use_depth:
+            # Size([18])
+        tensor_depth = torch.tensor(depth, device=device, dtype=torch.float32)[None, None, :, :]
+        grid = gt_joints.clone()
+        # grid = gt_joints[:, init_joints_idxs] # (1, N, 2)
+        grid[:, :, 0] /= tensor_depth.shape[-1]
+        grid[:, :, 1] /= tensor_depth.shape[-2]
+        grid = 2 * grid - 1
+        gt_joints_depth = torch.nn.functional.grid_sample(tensor_depth, grid[:, None, :, :]) # (1, 1, 1, 21)
+        gt_joints_depth = gt_joints_depth.reshape(1, 21, 1)
+
+        init_t = torch.tensor([[0, 0, gt_joints_depth[0, init_joints_idxs, 0].mean() / 1000.]], device=device)
+    else:
+        init_t = fitting.guess_init(body_model, gt_joints, edge_indices,
+                                    use_vposer=use_vposer, vposer=vposer,
+                                    pose_embedding=pose_embedding,
+                                    model_type=kwargs.get('model_type', 'smpl'),
+                                    focal_length=(camera.focal_length_x, camera.focal_length_y), dtype=dtype)
+    # import pdb; pdb.set_trace()
+    print("CHECK camera init translation: ", init_t)
+
     camera_loss = fitting.create_loss('camera_init',
                                       trans_estimation=init_t,
                                       init_joints_idxs=init_joints_idxs,
@@ -363,7 +384,7 @@ def fit_single_frame(img,
             camera.translation[:] = init_t.view_as(camera.translation)
             camera.center[:] = torch.tensor([W, H], dtype=dtype) * 0.5
 
-        print("CHECK camera: ", camera.translation)
+        print("CHECK camera translation: ", camera.translation)
         # Re-enable gradient calculation for the camera translation
         camera.translation.requires_grad = True
 
@@ -522,7 +543,7 @@ def fit_single_frame(img,
             pickle.dump(results[min_idx]['result'], result_file, protocol=2)
             body_model = body_model_list[min_idx]
 
-    if save_meshes or visualize:
+    if True or save_meshes or visualize:
         body_pose = vposer.decode(
             pose_embedding,
             output_type='aa').view(1, -1) if use_vposer else None
@@ -546,7 +567,7 @@ def fit_single_frame(img,
         out_mesh.apply_transform(rot)
         out_mesh.export(mesh_fn)
 
-    if visualize:
+    if True or visualize:
         import pyrender
 
         material = pyrender.MetallicRoughnessMaterial(
@@ -575,10 +596,13 @@ def fit_single_frame(img,
             cx=camera_center[0], cy=camera_center[1])
         scene.add(camera, pose=camera_pose)
 
-        # Get the lights from the viewer
-        light_nodes = monitor.mv.viewer._create_raymond_lights()
+        # custom
+        # # Get the lights from the viewer
+        mv = MeshViewer()
+        light_nodes = mv.viewer._create_raymond_lights()
         for node in light_nodes:
             scene.add_node(node)
+        mv.close_viewer()
 
         r = pyrender.OffscreenRenderer(viewport_width=W,
                                        viewport_height=H,
@@ -592,5 +616,4 @@ def fit_single_frame(img,
 
         img = pil_img.fromarray((output_img * 255).astype(np.uint8))
         img.save(out_img_fn)
-        import pdb; pdb.set_trace()
-        print('check visualization')
+

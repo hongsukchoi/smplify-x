@@ -521,8 +521,7 @@ class SMPLifyCameraInitLoss(nn.Module):
         joint_loss = torch.sum(joint_error) * self.data_weight ** 2
 
         depth_loss = 0.0
-        if (self.depth_loss_weight.item() > 0 and self.trans_estimation is not
-                None):
+        if (self.depth_loss_weight.item() > 0 and self.trans_estimation is not None):
             depth_loss = self.depth_loss_weight ** 2 * torch.sum((
                 camera.translation[:, 2] - self.trans_estimation[:, 2]).pow(2))
         

@@ -30,6 +30,8 @@ from collections import namedtuple
 import cv2
 import numpy as np
 
+from PIL import Image
+
 import torch
 from torch.utils.data import Dataset
 
@@ -304,6 +306,10 @@ class OpenPoseMano(Dataset):
         img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
         img_fn = osp.split(img_path)[1]
         img_fn, _ = osp.splitext(osp.split(img_path)[1])
+        
+        # read depth /  custom
+        depth_path = img_path.replace('images', 'depth').replace('jpg', 'png')
+        depth = np.asarray(Image.open(depth_path))
 
         keypoint_fn = osp.join(self.keyp_folder,
                                img_fn + '_keypoints.json')
@@ -315,7 +321,9 @@ class OpenPoseMano(Dataset):
 
         output_dict = {'fn': img_fn,
                        'img_path': img_path,
-                       'keypoints': keypoints, 'img': img}
+                       'keypoints': keypoints, 
+                       'img': img,
+                       'depth': depth}
         if keyp_tuple.gender_gt is not None:
             if len(keyp_tuple.gender_gt) > 0:
                 output_dict['gender_gt'] = keyp_tuple.gender_gt

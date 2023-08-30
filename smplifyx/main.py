@@ -205,29 +205,37 @@ def main(**args):
     for idx, data in enumerate(dataset_obj):
 
         img = data['img']
+        depth = data['depth']
         fn = data['fn']
         keypoints = data['keypoints']
         print('Processing: {}'.format(data['img_path']))
 
-        curr_result_folder = osp.join(result_folder, fn)
+        # curr_result_folder = osp.join(result_folder, fn)
+        curr_result_folder = result_folder
+
         if not osp.exists(curr_result_folder):
             os.makedirs(curr_result_folder)
-        curr_mesh_folder = osp.join(mesh_folder, fn)
+        # curr_mesh_folder = osp.join(mesh_folder, fn)
+        curr_mesh_folder = mesh_folder
+
         if not osp.exists(curr_mesh_folder):
             os.makedirs(curr_mesh_folder)
         for person_id in range(keypoints.shape[0]):
             if person_id >= max_persons and max_persons > 0:
                 continue
 
-            curr_result_fn = osp.join(curr_result_folder,
-                                      '{:03d}.pkl'.format(person_id))
-            curr_mesh_fn = osp.join(curr_mesh_folder,
-                                    '{:03d}.obj'.format(person_id))
+            # curr_result_fn = osp.join(curr_result_folder, '{:03d}.pkl'.format(person_id))
+            # curr_mesh_fn = osp.join(curr_mesh_folder, '{:03d}.obj'.format(person_id))
+            
+            curr_result_fn = osp.join(curr_result_folder, f'{fn}_{person_id:03d}.pkl')
+            curr_mesh_fn = osp.join(curr_mesh_folder, f'{fn}_{person_id:03d}.obj')
+            
+            # curr_img_folder = osp.join(output_folder, 'images', fn, '{:03d}'.format(person_id))
+            curr_img_folder = osp.join(output_folder, 'images')
 
-            curr_img_folder = osp.join(output_folder, 'images', fn,
-                                       '{:03d}'.format(person_id))
             if not osp.exists(curr_img_folder):
                 os.makedirs(curr_img_folder)
+            out_img_fn = osp.join(curr_img_folder, f'{fn}_{person_id:03d}.png')
 
             if gender_lbl_type != 'none':
                 if gender_lbl_type == 'pd' and 'gender_pd' in data:
@@ -244,9 +252,12 @@ def main(**args):
             elif gender == 'male':
                 body_model = male_model
 
-            out_img_fn = osp.join(curr_img_folder, 'output.png')
 
-            fit_single_frame(img, keypoints[[person_id]],
+            # out_img_fn = osp.join(curr_img_folder, 'output.png')
+
+            fit_single_frame(img, 
+                             depth,
+                             keypoints[[person_id]],
                              body_model=body_model,
                              camera=camera,
                              joint_weights=joint_weights,
@@ -264,7 +275,6 @@ def main(**args):
                              jaw_prior=jaw_prior,
                              angle_prior=angle_prior,
                              **args)
-        import pdb; pdb.set_trace()
 
     elapsed = time.time() - start
     time_msg = time.strftime('%H hours, %M minutes, %S seconds',
