@@ -330,40 +330,108 @@ def fit_multi_view(
         with open(result_fn, 'wb') as result_file:            
             pickle.dump(result, result_file, protocol=2)
 
-    if save_meshes or visualize:
+    if True or save_meshes or visualize:
+        import pyrender
+        import trimesh
+
         model_output = body_model(return_verts=True, body_pose=None)
         vertices = model_output.vertices.detach().cpu().numpy().squeeze()
 
-        # test projection
+        # update translation and scale
         global_trans = global_hand_translation.detach().cpu().numpy().squeeze()
         body_scale = hand_scale.detach().cpu().numpy().squeeze()
+        vertices = vertices * body_scale + global_trans
 
+
+        out_mesh = trimesh.Trimesh(vertices, body_model.faces, process=False)
+        rot = trimesh.transformations.rotation_matrix(
+            np.radians(180), [1, 0, 0])
+        # out_mesh.apply_transform(rot)
+        out_mesh.export(mesh_fn)
         # project smpl vertices onto images for debugging
         for i, (camera, img, out_img_fn) in enumerate(zip(camera_list, img_list, out_img_fn_list)):
+            material = pyrender.MetallicRoughnessMaterial(
+                metallicFactor=0.0,
+                alphaMode='OPAQUE',
+                baseColorFactor=(1.0, 1.0, 0.9, 1.0))
+
+            scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0],
+                                ambient_light=(0.3, 0.3, 0.3))
+            
+
             cam_fx = camera.focal_length_x.detach().cpu().numpy().squeeze()
             cam_fy = camera.focal_length_y.detach().cpu().numpy().squeeze()
             cam_c = camera.center.detach().cpu().numpy().squeeze()
             cam_trans = camera.translation.detach().cpu().numpy().squeeze()
             cam_rotation = camera.rotation.detach().cpu().numpy().squeeze()
 
-            vertices_proj = vertices * body_scale + global_trans
-            vertices_proj = np.dot(vertices_proj, cam_rotation.transpose())
-            vertices_proj += np.expand_dims(cam_trans, axis=0)
-            vertices_proj[:, 0] = vertices_proj[:, 0] * \
-                cam_fx / vertices_proj[:, 2] + cam_c[0]
-            vertices_proj[:, 1] = vertices_proj[:, 1] * \
-                cam_fy / vertices_proj[:, 2] + cam_c[1]
-            img_proj = np.copy(img)
-            for v in vertices_proj:
-                v = np.int32(np.round(v))
-                v[0] = np.clip(v[0], 0, img_proj.shape[1]-1)
-                v[1] = np.clip(v[1], 0, img_proj.shape[0]-1)
-                img_proj[v[1], v[0], :] = np.asarray(
-                    [0, 0, 1], dtype=np.float32)
-            img_proj = np.uint8(img_proj*255)
-            cv2.imwrite(out_img_fn, img_proj[:, :, ::-1])
-        import pdb
-        pdb.set_trace()
+            cam_mesh = copy.deepcopy(out_mesh)
+            transform = np.eye(4)
+            transform[:3, :3] = cam_rotation
+            transform[:3, 3] = cam_trans
+            cam_mesh.apply_transform(transform)
+            cam_mesh.apply_transform(rot)
+            mesh = pyrender.Mesh.from_trimesh(
+                cam_mesh,
+                material=material)
+            scene.add(mesh, 'mesh')
+
+
+            camera_pose = np.eye(4)
+            # camera_pose[:3, :3] = cam_rotation
+            # camera_pose[:3, 3] = cam_trans
+            # camera_pose[:, 1:3] = -camera_pose[:, 1:3]
+            # camera_pose = np.linalg.inv(camera_pose)
+
+            camera = pyrender.camera.IntrinsicsCamera(
+                fx=cam_fx, fy=cam_fy, cx=cam_c[0], cy=cam_c[1])
+            scene.add(camera, pose=camera_pose)
+
+            # custom
+            # # Get the lights from the viewer
+            mv = MeshViewer()
+            light_nodes = mv.viewer._create_raymond_lights()
+            for node in light_nodes:
+                scene.add_node(node)
+            mv.close_viewer()
+
+            H, W = img.shape[:2]
+            r = pyrender.OffscreenRenderer(viewport_width=W,
+                                        viewport_height=H,
+                                        point_size=1.0)
+            color, _ = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+            color = color.astype(np.float32) / 255.0
+
+            valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
+            output_img = (color[:, :, :-1] * valid_mask +
+                        (1 - valid_mask) * img)
+
+            img = pil_img.fromarray((output_img * 255).astype(np.uint8))
+            img.save(out_img_fn)
+            # cam_fx = camera.focal_length_x.detach().cpu().numpy().squeeze()
+            # cam_fy = camera.focal_length_y.detach().cpu().numpy().squeeze()
+            # cam_c = camera.center.detach().cpu().numpy().squeeze()
+            # cam_trans = camera.translation.detach().cpu().numpy().squeeze()
+            # cam_rotation = camera.rotation.detach().cpu().numpy().squeeze()
+
+            # vertices_proj = vertices * body_scale + global_trans
+            # vertices_proj = np.dot(vertices_proj, cam_rotation.transpose())
+            # vertices_proj += np.expand_dims(cam_trans, axis=0)
+            # vertices_proj[:, 0] = vertices_proj[:, 0] * \
+            #     cam_fx / vertices_proj[:, 2] + cam_c[0]
+            # vertices_proj[:, 1] = vertices_proj[:, 1] * \
+            #     cam_fy / vertices_proj[:, 2] + cam_c[1]
+            # img_proj = np.copy(img)
+            # for v in vertices_proj:
+            #     v = np.int32(np.round(v))
+            #     v[0] = np.clip(v[0], 0, img_proj.shape[1]-1)
+            #     v[1] = np.clip(v[1], 0, img_proj.shape[0]-1)
+            #     img_proj[v[1], v[0], :] = np.asarray(
+            #         [0, 0, 1], dtype=np.float32)
+            # img_proj = np.uint8(img_proj*255)
+            # cv2.imwrite(out_img_fn, img_proj[:, :, ::-1])
+            import pdb
+            pdb.set_trace()
 
         import trimesh
         out_mesh = trimesh.Trimesh(
