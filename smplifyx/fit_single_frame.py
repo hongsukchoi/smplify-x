@@ -617,3 +617,4 @@ def fit_single_frame(img,
         img = pil_img.fromarray((output_img * 255).astype(np.uint8))
         img.save(out_img_fn)
 
+

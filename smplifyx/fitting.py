@@ -203,15 +203,7 @@ class FittingMonitor(object):
                 break
 
             if self.visualize and n % self.summary_steps == 0:
-                body_pose = vposer.decode(
-                    pose_embedding, output_type='aa').view(
-                        1, -1) if use_vposer else None
-
-                if append_wrists:
-                    wrist_pose = torch.zeros([body_pose.shape[0], 6],
-                                             dtype=body_pose.dtype,
-                                             device=body_pose.device)
-                    body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+                body_pose = None
                 model_output = body_model(
                     return_verts=True, body_pose=body_pose)
                 vertices = model_output.vertices.detach().cpu().numpy()
@@ -282,6 +274,72 @@ class FittingMonitor(object):
 
         return fitting_func
 
+    def create_fitting_closure_multiview(self,
+                                            optimizer, body_model,
+                                            camera_list=None, global_body_translation=None,
+                                            body_model_scale=None,
+                                            gt_joints_list=None, loss_list=None,
+                                            joints_conf_list=None,
+                                            joint_weights=None,
+                                            return_verts=True, return_full_pose=False,
+                                            use_vposer=False, vposer=None,
+                                            pose_embedding=None,
+                                            create_graph=False,
+                                            **kwargs):
+        faces_tensor = body_model.faces_tensor.view(-1)
+        append_wrists = self.model_type == 'smpl' and use_vposer
+
+        def fitting_func(backward=True):
+            if backward:
+                optimizer.zero_grad()
+
+            if self.model_type != 'mano':
+                body_pose = vposer.decode(
+                    pose_embedding, output_type='aa').view(
+                        1, -1) if use_vposer else None
+            else:
+                body_pose = None
+
+            if append_wrists:
+                wrist_pose = torch.zeros([body_pose.shape[0], 6],
+                                         dtype=body_pose.dtype,
+                                         device=body_pose.device)
+                body_pose = torch.cat([body_pose, wrist_pose], dim=1)
+
+            body_model_output = body_model(return_verts=return_verts,
+                                           body_pose=body_pose,
+                                           return_full_pose=return_full_pose)
+            total_loss = 0
+
+            for i in range(len(camera_list)):
+                loss = loss_list[i]
+                total_loss += loss(body_model_output, camera=camera_list[i],
+                                   global_body_translation=global_body_translation,
+                                   body_model_scale=body_model_scale,
+                                   gt_joints=gt_joints_list[i],
+                                   body_model_faces=faces_tensor,
+                                   joints_conf=joints_conf_list[i],
+                                   joint_weights=joint_weights,
+                                   pose_embedding=pose_embedding,
+                                   use_vposer=use_vposer,
+                                   **kwargs)
+
+            if backward:
+                total_loss.backward(create_graph=create_graph)
+
+            self.steps += 1
+            if self.visualize and self.steps % self.summary_steps == 0:
+                model_output = body_model(return_verts=True,
+                                          body_pose=body_pose)
+                vertices = model_output.vertices.detach().cpu().numpy()
+
+                self.mv.update_mesh(vertices.squeeze(),
+                                    body_model.faces)
+
+            return total_loss
+
+        return fitting_func
+    
 
 def create_loss(loss_type='smplify', **kwargs):
     if loss_type == 'smplify':
@@ -377,11 +435,14 @@ class SMPLifyLoss(nn.Module):
                                                  device=weight_tensor.device)
                 setattr(self, key, weight_tensor)
 
-    def forward(self, body_model_output, camera, gt_joints, joints_conf,
+    def forward(self, body_model_output, camera, 
+                global_body_translation, body_model_scale,
+                gt_joints, joints_conf,
                 body_model_faces, joint_weights,
                 use_vposer=False, pose_embedding=None,
                 **kwargs):
-        projected_joints = camera(body_model_output.joints)
+        projected_joints = camera(
+            body_model_scale * body_model_output.joints + global_body_translation) 
         # Calculate the weights for each joints
         weights = (joint_weights * joints_conf
                    if self.use_joints_conf else

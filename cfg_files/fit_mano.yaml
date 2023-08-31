@@ -71,8 +71,8 @@ expr_weights:
     - 0.5e1
     - 0.5e1
 hand_pose_prior_weights:
-    - 4.04e2
-    - 4.04e2
+    - 1e2 #4.04e2
+    - 1e2 #4.04e2
     - 57.4
     - 4.78
     - 4.78

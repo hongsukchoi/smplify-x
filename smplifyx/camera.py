@@ -48,6 +48,7 @@ class PerspectiveCamera(nn.Module):
                  batch_size=1,
                  center=None, dtype=torch.float32, **kwargs):
         super(PerspectiveCamera, self).__init__()
+        self.name = ''
         self.batch_size = batch_size
         self.dtype = dtype
         # Make a buffer so that PyTorch does not complain when creating
