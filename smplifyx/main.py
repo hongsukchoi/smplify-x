@@ -186,6 +186,7 @@ def main(**args):
         keypoints_list = data['keypoints_list']
         depth = data['depth']
         fn = data['fn']  # frame index 0000
+        handoccnet_result = data['handoccnet']
         print('Processing: {}'.format(data['img_path_list']))
 
         curr_result_folder = osp.join(result_folder, fn)
@@ -198,7 +199,7 @@ def main(**args):
         if not osp.exists(curr_img_folder):
             os.makedirs(curr_img_folder)
         
-        out_img_fn_list = [osp.join(curr_img_folder, f'{cam_idx}.png') for cam_idx in range(dataset_obj.num_cam)]
+        out_img_fn_list = [osp.join(curr_img_folder, f'cam_{cam_idx}.png') for cam_idx in range(dataset_obj.num_cam)]
      
         gender = input_gender
         if gender == 'neutral':
@@ -209,6 +210,7 @@ def main(**args):
             body_model = male_model
 
         fit_multi_view(
+            handoccnet_result,
             depth,
             img_list,
             keypoints_list,

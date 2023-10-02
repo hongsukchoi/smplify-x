@@ -114,26 +114,28 @@ def read_keypoints(keypoint_fn, use_hands=True, use_face=True,
                      gender_gt=gender_gt)
 
 
-def read_hand_keypoints(keypoint_fn, conf_thr=0.15):
-    with open(keypoint_fn) as keypoint_file:
-        data = json.load(keypoint_file)
+def read_hand_keypoints(keypoint_fn, conf_thr=0.12):
+    if osp.exists(keypoint_fn):
+        with open(keypoint_fn) as keypoint_file:
+            data = json.load(keypoint_file)
 
-    keypoints = []
+        keypoints = []
 
-    gender_pd = []
-    gender_gt = []
-    for idx, person_data in enumerate(data['people']):
-        right_hand_keyp = np.array(
-                person_data['hand_right_keypoints_2d'],
-                dtype=np.float32).reshape([-1, 3])
-        # make low confidence 0
-        right_hand_keyp[:, 2] = right_hand_keyp[:, 2] * (right_hand_keyp[:, 2] > conf_thr)
+        gender_pd = []
+        gender_gt = []
+        for idx, person_data in enumerate(data['people']):
+            right_hand_keyp = np.array(
+                    person_data['hand_right_keypoints_2d'],
+                    dtype=np.float32).reshape([-1, 3])
+            # make low confidence 0
+            right_hand_keyp[:, 2] = right_hand_keyp[:, 2] * (right_hand_keyp[:, 2] > conf_thr)
 
-        keypoints.append(right_hand_keyp)
+            keypoints.append(right_hand_keyp)
 
-    # just one person...
-    return keypoints
-
+        # just one person...
+        return keypoints
+    else:
+        return [np.zeros((21,3))]
 
 class OpenPose(Dataset):
 
@@ -274,6 +276,10 @@ class OpenPoseMano(Dataset):
         self.data_folder = data_folder
         self.img_path_list = sorted(glob.glob(osp.join(data_folder,  'cam_0', '*.jpg')))
         self.keyp_folder_list = sorted(glob.glob(osp.join(data_folder,  'cam_0_keypoints', '*_keypoints.json')))
+        # TEMP
+        # self.img_path_list = self.img_path_list[65:]
+        # self.keyp_folder_list = self.keyp_folder_list[65:]
+
         self.depth_folder = osp.join(data_folder, 'cam_0_depth')
         cam_path = '/home/hongsuk.c/Projects/MultiCamCalib/data/handnerf_calibration_0822/output/cam_params/cam_params_final.json'
         self.camera_list = self.get_camera_list(cam_path)
@@ -360,7 +366,39 @@ class OpenPoseMano(Dataset):
             'keypoints_list': keypoints_list, 
             'img_list': img_list,
         }
-        
+
+        #
+        mano_folder_name = f'cam_0_handoccnet'
+        img_fn = osp.basename(base_img_path)
+        mano_fn = '0' + img_fn[1:-4] + '_3dmesh.json'  #
+        mano_path = osp.join(self.data_folder, mano_folder_name, mano_fn)
+        camera = self.camera_list[0]
+        with open(mano_path, 'r') as f:
+            mano_data = json.load(f)
+        hand_scale = np.array(mano_data['hand_scale'], dtype=float)  # (1)
+        hand_translation = np.array(mano_data['hand_translation'], dtype=float) # (3)
+        mano_pose = np.array(mano_data['mano_pose'], dtype=float) # (48)
+        mano_shape = np.array(mano_data['mano_shape'], dtype=float)  # (10)
+
+        # get camera to world transformation
+        rot = camera.rotation.data.cpu().numpy()[0, :, :]
+        trans = camera.translation.data.cpu().numpy()[0, :]
+        rot = rot.T
+        trans = - rot @ trans 
+
+        global_ori, _ = cv2.Rodrigues(mano_pose[:3])
+        global_ori_aa, _ = cv2.Rodrigues(rot @ global_ori)
+        mano_pose[:3] = global_ori_aa[:, 0]
+
+        hand_translation = rot @ hand_translation + trans
+        output_dict['handoccnet'] = {
+            'hand_scale': hand_scale,
+            'hand_translation': hand_translation,
+            'mano_pose': mano_pose,
+            'mano_shape': mano_shape
+        }
+
+
         return output_dict
 
     def __iter__(self):

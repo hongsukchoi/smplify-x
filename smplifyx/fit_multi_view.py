@@ -47,9 +47,13 @@ from optimizers import optim_factory
 
 import fitting
 from human_body_prior.tools.model_loader import load_vposer
+from utils import to_tensor
+
+
 
 
 def fit_multi_view(
+        handoccnet_result,
                      depth,
                      img_list,
                      keypoints_list,
@@ -104,7 +108,6 @@ def fit_multi_view(
                      right_shoulder_idx=5,
                      **kwargs):
     assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
-
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
 
     if degrees is None:
@@ -229,7 +232,7 @@ def fit_multi_view(
         loss_list.append(loss)
 
     # potentially use depth info from the wrist cam
-    hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=True)
+    hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=False)
     global_hand_translation = torch.tensor([0, 0, 0], dtype=dtype, device=device,requires_grad=True)
     
     with fitting.FittingMonitor(
@@ -250,12 +253,19 @@ def fit_multi_view(
         final_loss_val = 0
         opt_start = time.time()
 
+        # initialize pose here.
         # new_params = defaultdict(global_orient=orient,
         #                          body_pose=body_mean_pose)
-        new_params = defaultdict(global_orient=orient)
+        use_handoccnet = True
+        if use_handoccnet:
+            orient = torch.tensor(handoccnet_result['mano_pose'][:3], dtype=dtype, device=device).reshape(1,3)
+            mano_pose = torch.tensor(handoccnet_result['mano_pose'][3:], dtype=dtype, device=device).reshape(1,45)
+            mano_shape = torch.tensor(handoccnet_result['mano_shape'][:], dtype=dtype, device=device).reshape(1,10)
+            hand_scale = torch.tensor(handoccnet_result['hand_scale'][:], dtype=dtype, device=device, requires_grad=False)
+            global_hand_translation = torch.tensor(handoccnet_result['hand_translation'], dtype=dtype, device=device, requires_grad=True)
+        new_params = defaultdict(global_orient=orient, hand_pose=mano_pose, betas=mano_shape)
         body_model.reset_params(**new_params) # if not designated, reset to zreo
 
-        
         for opt_idx, curr_weights in enumerate(tqdm(opt_weights, desc='Stage')):
             body_params = list(body_model.parameters())
 
@@ -330,6 +340,7 @@ def fit_multi_view(
         with open(result_fn, 'wb') as result_file:            
             pickle.dump(result, result_file, protocol=2)
 
+    mv = MeshViewer()
     if True or save_meshes or visualize:
         import pyrender
         import trimesh
@@ -389,7 +400,6 @@ def fit_multi_view(
 
             # custom
             # # Get the lights from the viewer
-            mv = MeshViewer()
             light_nodes = mv.viewer._create_raymond_lights()
             for node in light_nodes:
                 scene.add_node(node)
@@ -430,10 +440,7 @@ def fit_multi_view(
             #         [0, 0, 1], dtype=np.float32)
             # img_proj = np.uint8(img_proj*255)
             # cv2.imwrite(out_img_fn, img_proj[:, :, ::-1])
-            import pdb
-            pdb.set_trace()
 
-        import trimesh
         out_mesh = trimesh.Trimesh(
             vertices * body_scale + global_trans, body_model.faces)
         out_mesh.export(mesh_fn)
