@@ -72,14 +72,11 @@ def main(**args):
         print('CUDA is not available, exiting!')
         sys.exit(-1)
 
-    img_folder = args.pop('img_folder', 'images')
-    dataset_obj = create_dataset(img_folder=img_folder, **args)
+    dataset_obj = create_dataset(**args)
 
     start = time.time()
 
     input_gender = args.pop('gender', 'neutral')
-    gender_lbl_type = args.pop('gender_lbl_type', 'none')
-    max_persons = args.pop('max_persons', -1)
 
     float_dtype = args.get('float_dtype', 'float32')
     if float_dtype == 'float64':
@@ -107,46 +104,27 @@ def main(**args):
                         **args)
 
     male_model = smplx.create(gender='male', **model_params)
-    # SMPL-H has no gender-neutral model
-    if args.get('model_type') != 'smplh':
-        neutral_model = smplx.create(gender='neutral', **model_params)
+    neutral_model = smplx.create(gender='neutral', **model_params)
     female_model = smplx.create(gender='female', **model_params)
 
     use_hands = args.get('use_hands', True)
-    use_face = args.get('use_face', True)
 
-    body_pose_prior = create_prior(
-        prior_type=args.get('body_prior_type'),
+    # get priors
+    lhand_args = args.copy()
+    lhand_args['num_gaussians'] = args.get('num_pca_comps')
+    left_hand_prior = create_prior(
+        prior_type=args.get('left_hand_prior_type'),
         dtype=dtype,
-        **args)
+        use_left_hand=True,
+        **lhand_args)
 
-    jaw_prior, expr_prior = None, None
-    if use_face:
-        jaw_prior = create_prior(
-            prior_type=args.get('jaw_prior_type'),
-            dtype=dtype,
-            **args)
-        expr_prior = create_prior(
-            prior_type=args.get('expr_prior_type', 'l2'),
-            dtype=dtype, **args)
-
-    left_hand_prior, right_hand_prior = None, None
-    if use_hands:
-        lhand_args = args.copy()
-        lhand_args['num_gaussians'] = args.get('num_pca_comps')
-        left_hand_prior = create_prior(
-            prior_type=args.get('left_hand_prior_type'),
-            dtype=dtype,
-            use_left_hand=True,
-            **lhand_args)
-
-        rhand_args = args.copy()
-        rhand_args['num_gaussians'] = args.get('num_pca_comps')
-        right_hand_prior = create_prior(
-            prior_type=args.get('right_hand_prior_type'),
-            dtype=dtype,
-            use_right_hand=True,
-            **rhand_args)
+    rhand_args = args.copy()
+    rhand_args['num_gaussians'] = args.get('num_pca_comps')
+    right_hand_prior = create_prior(
+        prior_type=args.get('right_hand_prior_type'),
+        dtype=dtype,
+        use_right_hand=True,
+        **rhand_args)
 
     shape_prior = create_prior(
         prior_type=args.get('shape_prior_type', 'l2'),
@@ -159,23 +137,17 @@ def main(**args):
 
         female_model = female_model.to(device=device)
         male_model = male_model.to(device=device)
-        if args.get('model_type') != 'smplh':
-            neutral_model = neutral_model.to(device=device)
-        body_pose_prior = body_pose_prior.to(device=device)
+        neutral_model = neutral_model.to(device=device)
         angle_prior = angle_prior.to(device=device)
         shape_prior = shape_prior.to(device=device)
-        if use_face:
-            expr_prior = expr_prior.to(device=device)
-            jaw_prior = jaw_prior.to(device=device)
-        if use_hands:
-            left_hand_prior = left_hand_prior.to(device=device)
-            right_hand_prior = right_hand_prior.to(device=device)
+
+        left_hand_prior = left_hand_prior.to(device=device)
+        right_hand_prior = right_hand_prior.to(device=device)
     else:
         device = torch.device('cpu')
 
     # A weight for every joint of the model
-    joint_weights = dataset_obj.get_joint_weights().to(device=device,
-                                                       dtype=dtype)
+    joint_weights = dataset_obj.get_joint_weights().to(device=device, dtype=dtype)
     # Add a fake batch dimension for broadcasting
     joint_weights.unsqueeze_(dim=0)
 
@@ -224,12 +196,13 @@ def main(**args):
             result_fn=curr_result_fn,
             mesh_fn=curr_mesh_fn,
             shape_prior=shape_prior,
-            expr_prior=expr_prior,
-            body_pose_prior=body_pose_prior,
+            angle_prior=angle_prior,
             left_hand_prior=left_hand_prior,
             right_hand_prior=right_hand_prior,
-            jaw_prior=jaw_prior,
-            angle_prior=angle_prior,
+            jaw_prior=None,
+            expr_prior=None,
+            body_pose_prior=None,
+            
         **args)
 
         # fit_single_frame(img, 

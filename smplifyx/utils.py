@@ -134,16 +134,17 @@ def smpl_to_openpose(model_type='smplx', use_hands=True, use_face=True,
                 mapping += [face_mapping]
 
             return np.concatenate(mapping)
+        
         elif model_type == 'mano':
             # openpose definition = ('Wrist', 'Thumb_1', 'Thumb_2', 'Thumb_3', 'Thumb_4', 'Index_1', 'Index_2', 'Index_3', 'Index_4', 'Middle_1',
             #                    'Middle_2', 'Middle_3', 'Middle_4', 'Ring_1', 'Ring_2', 'Ring_3', 'Ring_4', 'Pinky_1', 'Pinky_2', 'Pinky_3', 'Pinly_4')
             # openpose definition: https://github.com/hongsukchoi/OpenPose_3rdParty/tree/hand_demo
             mapping = np.array([0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18,
                                 10, 11, 12, 19, 7, 8, 9, 20], dtype=np.int32) 
-            # mapping = np.arange(21, dtype=np.int32)
             return mapping
         else:
             raise ValueError('Unknown model type: {}'.format(model_type))
+        
     elif openpose_format == 'coco19':
         if model_type == 'smpl':
             return np.array([24, 12, 17, 19, 21, 16, 18, 20, 0, 2, 5, 8,

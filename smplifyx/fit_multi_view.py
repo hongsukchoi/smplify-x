@@ -337,11 +337,12 @@ def fit_multi_view(
         result['hand_scale'] = hand_scale.detach().cpu().numpy()
         result['loss'] = final_loss_val
 
-        with open(result_fn, 'wb') as result_file:            
-            pickle.dump(result, result_file, protocol=2)
+        # TEMP
+        # with open(result_fn, 'wb') as result_file:            
+        #     pickle.dump(result, result_file, protocol=2)
 
     mv = MeshViewer()
-    if True or save_meshes or visualize:
+    if save_meshes or visualize:
         import pyrender
         import trimesh
 
@@ -418,6 +419,7 @@ def fit_multi_view(
 
             img = pil_img.fromarray((output_img * 255).astype(np.uint8))
             img.save(out_img_fn)
+
             # cam_fx = camera.focal_length_x.detach().cpu().numpy().squeeze()
             # cam_fy = camera.focal_length_y.detach().cpu().numpy().squeeze()
             # cam_c = camera.center.detach().cpu().numpy().squeeze()

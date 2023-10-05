@@ -121,6 +121,9 @@ def parse_config(argv=None):
     parser.add_argument('--use_joints_conf', default=True,
                         type=lambda x: x.lower() in ['true', '1'],
                         help='Use the confidence scores for the optimization')
+    parser.add_argument('--joints_conf_thr', type=float, default=0.12,
+                        help='Threshold of OpenPose joint confidence. If less, ignore.')
+    
     parser.add_argument('--batch_size', type=int, default=1,
                         help='The size of the batch')
     parser.add_argument('--num_gaussians',
