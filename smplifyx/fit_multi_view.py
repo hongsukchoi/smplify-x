@@ -46,7 +46,6 @@ import PIL.Image as pil_img
 from optimizers import optim_factory
 
 import fitting
-from human_body_prior.tools.model_loader import load_vposer
 from utils import to_tensor
 
 
@@ -54,48 +53,26 @@ from utils import to_tensor
 
 def fit_multi_view(
         handoccnet_result,
-                     depth,
                      img_list,
                      keypoints_list,
                      camera_list,
-                     body_model,
+                     hand_model,
                      joint_weights,
-                     body_pose_prior,
-                     jaw_prior,
-                     left_hand_prior,
                      right_hand_prior,
                      shape_prior,
-                     expr_prior,
-                     angle_prior,
+                     fit_hand_scale=False,
                      result_fn='out.pkl',
                      mesh_fn='out.obj',
                      out_img_fn_list=['overlay.png'],
                      loss_type='smplify',
                      use_cuda=True,
-                     init_joints_idxs=(9, 12, 2, 5),
-                     use_face=True,
-                     use_hands=True,
                      data_weights=None,
-                     body_pose_prior_weights=None,
                      hand_pose_prior_weights=None,
-                     jaw_pose_prior_weights=None,
                      shape_weights=None,
-                     expr_weights=None,
                      hand_joints_weights=None,
-                     face_joints_weights=None,
-                     depth_loss_weight=1e2,
                      interpenetration=True,
                      coll_loss_weights=None,
-                     df_cone_height=0.5,
-                     penalize_outside=True,
-                     max_collisions=8,
-                     point2plane=False,
-                     part_segm_fn='',
-                     focal_length=5000.,
-                     side_view_thsh=25.,
                      rho=100,
-                     vposer_latent_dim=32,
-                     vposer_ckpt='',
                      use_joints_conf=False,
                      interactive=True,
                      visualize=False,
@@ -103,9 +80,6 @@ def fit_multi_view(
                      degrees=None,
                      batch_size=1,
                      dtype=torch.float32,
-                     ign_part_pairs=None,
-                     left_shoulder_idx=2,
-                     right_shoulder_idx=5,
                      **kwargs):
     assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
@@ -116,63 +90,51 @@ def fit_multi_view(
     if data_weights is None:
         data_weights = [1, ] * 5
 
-    if body_pose_prior_weights is None:
-        body_pose_prior_weights = [4.04 * 1e2, 4.04 * 1e2, 57.4, 4.78]
 
-    msg = (
-        'Number of Body pose prior weights {}'.format(
-            len(body_pose_prior_weights)) +
-        ' does not match the number of data term weights {}'.format(
-            len(data_weights)))
-    assert (len(data_weights) ==
-            len(body_pose_prior_weights)), msg
-
-    if use_hands:
-        if hand_pose_prior_weights is None:
-            hand_pose_prior_weights = [1e2, 5 * 1e1, 1e1, .5 * 1e1]
-        msg = ('Number of Body pose prior weights does not match the' +
-               ' number of hand pose prior weights')
-        assert (len(hand_pose_prior_weights) ==
-                len(body_pose_prior_weights)), msg
-        if hand_joints_weights is None:
-            hand_joints_weights = [0.0, 0.0, 0.0, 1.0]
-            msg = ('Number of Body pose prior weights does not match the' +
-                   ' number of hand joint distance weights')
-            assert (len(hand_joints_weights) ==
-                    len(body_pose_prior_weights)), msg
+    if hand_pose_prior_weights is None:
+        hand_pose_prior_weights = [1e2, 5 * 1e1, 1e1, .5 * 1e1]
+    msg = ('Number of hand pose prior weights does not match the' +
+            ' number of data term weights')
+    assert (len(hand_pose_prior_weights) ==
+            len(data_weights)), msg
+    if hand_joints_weights is None:
+        hand_joints_weights = [0.0, 0.0, 0.0, 1.0]
+        msg = ('Number of hand joint distance weights does not match the' +
+                ' number of data term weights')
+        assert (len(hand_joints_weights) ==
+                len(data_weights)), msg
 
     if shape_weights is None:
         shape_weights = [1e2, 5 * 1e1, 1e1, .5 * 1e1]
-    msg = ('Number of Body pose prior weights = {} does not match the' +
-           ' number of Shape prior weights = {}')
+    msg = ('Number of shape prior weights = {} does not match the' +
+           ' number of data term weights = {}')
     assert (len(shape_weights) ==
-            len(body_pose_prior_weights)), msg.format(
+            len(data_weights)), msg.format(
                 len(shape_weights),
-                len(body_pose_prior_weights))
+                len(data_weights))
 
     if coll_loss_weights is None:
-        coll_loss_weights = [0.0] * len(body_pose_prior_weights)
-    msg = ('Number of Body pose prior weights does not match the' +
-           ' number of collision loss weights')
+        coll_loss_weights = [0.0] * len(data_weights)
+    msg = ('Number of collision loss weights does not match the' +
+           ' number of data term weights')
     assert (len(coll_loss_weights) ==
-            len(body_pose_prior_weights)), msg
-
+            len(data_weights)), msg
 
     view_num = len(camera_list)
     loss_list = list()
-    gt_joints_list = list()
+    target_joints_list = list() 
     joints_conf_list = list()
 
     assert(view_num > 0)
     for view_id in range(view_num):
         keypoint_data = torch.tensor(keypoints_list[view_id], dtype=dtype)
-        gt_joints = keypoint_data[:, :, :2]
+        target_joints = keypoint_data[:, :, :2]
         if use_joints_conf:
             joints_conf = keypoint_data[:, :, 2].reshape(1, -1)
 
         # Transfer the data to the correct device
-        gt_joints = gt_joints.to(device=device, dtype=dtype)
-        gt_joints_list.append(gt_joints)
+        target_joints = target_joints.to(device=device, dtype=dtype)
+        target_joints_list.append(target_joints)
         if use_joints_conf:
             joints_conf = joints_conf.to(device=device, dtype=dtype)
             joints_conf_list.append(joints_conf)
@@ -187,18 +149,11 @@ def fit_multi_view(
 
         # Weights used for the pose prior and the shape prior
         opt_weights_dict = {'data_weight': data_weights,
-                            'body_pose_weight': body_pose_prior_weights,
-                            'shape_weight': shape_weights}
-        if use_face:
-            opt_weights_dict['face_weight'] = face_joints_weights
-            opt_weights_dict['expr_prior_weight'] = expr_weights
-            opt_weights_dict['jaw_prior_weight'] = jaw_pose_prior_weights
-        if use_hands:
-            opt_weights_dict['hand_weight'] = hand_joints_weights
-            opt_weights_dict['hand_prior_weight'] = hand_pose_prior_weights
-        if interpenetration:
-            opt_weights_dict['coll_loss_weight'] = coll_loss_weights
-
+                            'shape_weight': shape_weights,
+                            'hand_weight': hand_joints_weights,
+                            'hand_prior_weight': hand_pose_prior_weights
+                        }
+        
         keys = opt_weights_dict.keys()
         opt_weights = [dict(zip(keys, vals)) for vals in
                     zip(*(opt_weights_dict[k] for k in keys
@@ -209,19 +164,12 @@ def fit_multi_view(
                                                 device=device,
                                                 dtype=dtype)
 
-      
         loss = fitting.create_loss(loss_type=loss_type,
                                 joint_weights=joint_weights,
                                 rho=rho,
                                 use_joints_conf=use_joints_conf,
-                                use_face=use_face, use_hands=use_hands,
-                                body_pose_prior=body_pose_prior,
                                 shape_prior=shape_prior,
-                                angle_prior=angle_prior,
-                                expr_prior=expr_prior,
-                                left_hand_prior=left_hand_prior,
                                 right_hand_prior=right_hand_prior,
-                                jaw_prior=jaw_prior,
                                 interpenetration=interpenetration,
                                 pen_distance=pen_distance,
                                 search_tree=search_tree,
@@ -232,22 +180,15 @@ def fit_multi_view(
         loss_list.append(loss)
 
     # potentially use depth info from the wrist cam
-    hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=False)
+    hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=fit_hand_scale)
     global_hand_translation = torch.tensor([0, 0, 0], dtype=dtype, device=device,requires_grad=True)
     
     with fitting.FittingMonitor(
             batch_size=batch_size, visualize=visualize, **kwargs) as monitor:
 
-
         data_weight = 2.
      
-        try_both_orient = False
-
-        orient = body_model.global_orient.detach().cpu().numpy()
-
-        # store here the final error for both orientations,
-        # and pick the orientation resulting in the lowest error
-
+        orient = hand_model.global_orient.detach().cpu().numpy()
 
         # Step 2: Optimize the full model
         final_loss_val = 0
@@ -255,7 +196,7 @@ def fit_multi_view(
 
         # initialize pose here.
         # new_params = defaultdict(global_orient=orient,
-        #                          body_pose=body_mean_pose)
+        #                          hand_pose=hand_mean_pose)
         use_handoccnet = True
         if use_handoccnet:
             orient = torch.tensor(handoccnet_result['mano_pose'][:3], dtype=dtype, device=device).reshape(1,3)
@@ -264,39 +205,33 @@ def fit_multi_view(
             hand_scale = torch.tensor(handoccnet_result['hand_scale'][:], dtype=dtype, device=device, requires_grad=False)
             global_hand_translation = torch.tensor(handoccnet_result['hand_translation'], dtype=dtype, device=device, requires_grad=True)
         new_params = defaultdict(global_orient=orient, hand_pose=mano_pose, betas=mano_shape)
-        body_model.reset_params(**new_params) # if not designated, reset to zreo
+        hand_model.reset_params(**new_params) # if not designated, reset to zreo
 
         for opt_idx, curr_weights in enumerate(tqdm(opt_weights, desc='Stage')):
-            body_params = list(body_model.parameters())
+            hand_params = list(hand_model.parameters())
 
             final_params = list(
-                filter(lambda x: x.requires_grad, body_params))
+                filter(lambda x: x.requires_grad, hand_params))
             final_params.append(global_hand_translation)
             final_params.append(hand_scale)
 
-            body_optimizer, body_create_graph = optim_factory.create_optimizer(
+            hand_optimizer, hand_create_graph = optim_factory.create_optimizer(
                 final_params,
                 **kwargs)
-            body_optimizer.zero_grad()
+            hand_optimizer.zero_grad()
 
             curr_weights['data_weight'] = data_weight
-            curr_weights['bending_prior_weight'] = (
-                3.17 * curr_weights['body_pose_weight'])
-            if use_hands:
-                joint_weights[:, 25:67] = curr_weights['hand_weight']
-            if use_face:
-                joint_weights[:, 67:] = curr_weights['face_weight']
             for i in range(len(loss_list)):
                 loss_list[i].reset_loss_weights(curr_weights)
 
             closure = monitor.create_fitting_closure_multiview(
-                body_optimizer, body_model,
-                camera_list=camera_list, global_body_translation=global_hand_translation,
-                body_model_scale=hand_scale,
-                gt_joints_list=gt_joints_list,
+                hand_optimizer, hand_model,
+                camera_list=camera_list, global_hand_translation=global_hand_translation,
+                hand_model_scale=hand_scale,
+                target_joints_list=target_joints_list,
                 joints_conf_list=joints_conf_list,
                 joint_weights=joint_weights,
-                loss_list=loss_list, create_graph=body_create_graph,
+                loss_list=loss_list, create_graph=hand_create_graph,
                 return_verts=True, return_full_pose=True)
                 
             if interactive:
@@ -304,9 +239,9 @@ def fit_multi_view(
                     torch.cuda.synchronize()
                 stage_start = time.time()
             final_loss_val = monitor.run_fitting(
-                body_optimizer,
+                hand_optimizer,
                 closure, final_params,
-                body_model
+                hand_model
             )
 
             if interactive:
@@ -323,8 +258,8 @@ def fit_multi_view(
                 torch.cuda.synchronize()
             elapsed = time.time() - opt_start
             tqdm.write(
-                'Body fitting Orientation done after {:.4f} seconds'.format(elapsed))
-            tqdm.write('Body final loss val = {:.5f}'.format(
+                'Hand fitting Orientation done after {:.4f} seconds'.format(elapsed))
+            tqdm.write('Hand final loss val = {:.5f}'.format(
                 final_loss_val))
 
         # Get the result of the fitting process
@@ -332,30 +267,30 @@ def fit_multi_view(
         # orientations, if they exist
         result = {}
         result.update({key: val.detach().cpu().numpy()
-                        for key, val in body_model.named_parameters()})
+                        for key, val in hand_model.named_parameters()})
         result['global_hand_translation'] = global_hand_translation.detach().cpu().numpy()
         result['hand_scale'] = hand_scale.detach().cpu().numpy()
         result['loss'] = final_loss_val
 
-        # TEMP
-        # with open(result_fn, 'wb') as result_file:            
-        #     pickle.dump(result, result_file, protocol=2)
+        with open(result_fn, 'wb') as result_file:            
+            pickle.dump(result, result_file, protocol=2)
 
+    return 
     mv = MeshViewer()
     if save_meshes or visualize:
         import pyrender
         import trimesh
 
-        model_output = body_model(return_verts=True, body_pose=None)
+        model_output = hand_model(return_verts=True, hand_pose=None)
         vertices = model_output.vertices.detach().cpu().numpy().squeeze()
 
         # update translation and scale
         global_trans = global_hand_translation.detach().cpu().numpy().squeeze()
-        body_scale = hand_scale.detach().cpu().numpy().squeeze()
-        vertices = vertices * body_scale + global_trans
+        hand_scale = hand_scale.detach().cpu().numpy().squeeze()
+        vertices = vertices * hand_scale + global_trans
 
 
-        out_mesh = trimesh.Trimesh(vertices, body_model.faces, process=False)
+        out_mesh = trimesh.Trimesh(vertices, hand_model.faces, process=False)
         rot = trimesh.transformations.rotation_matrix(
             np.radians(180), [1, 0, 0])
         # out_mesh.apply_transform(rot)
@@ -426,7 +361,7 @@ def fit_multi_view(
             # cam_trans = camera.translation.detach().cpu().numpy().squeeze()
             # cam_rotation = camera.rotation.detach().cpu().numpy().squeeze()
 
-            # vertices_proj = vertices * body_scale + global_trans
+            # vertices_proj = vertices * hand_scale + global_trans
             # vertices_proj = np.dot(vertices_proj, cam_rotation.transpose())
             # vertices_proj += np.expand_dims(cam_trans, axis=0)
             # vertices_proj[:, 0] = vertices_proj[:, 0] * \
@@ -444,5 +379,5 @@ def fit_multi_view(
             # cv2.imwrite(out_img_fn, img_proj[:, :, ::-1])
 
         out_mesh = trimesh.Trimesh(
-            vertices * body_scale + global_trans, body_model.faces)
+            vertices * hand_scale + global_trans, hand_model.faces)
         out_mesh.export(mesh_fn)

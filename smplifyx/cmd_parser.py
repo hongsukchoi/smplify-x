@@ -294,6 +294,11 @@ def parse_config(argv=None):
     parser.add_argument('--maxiters', type=int, default=100,
                         help='The maximum iterations for the optimization')
 
+    parser.add_argument('--fit_hand_scale',
+                        type=lambda arg: arg.lower() == 'true',
+                        default=False,
+                        help='Also fit the scale of the hand.')
+    
     args = parser.parse_args(argv)
 
     args_dict = vars(args)

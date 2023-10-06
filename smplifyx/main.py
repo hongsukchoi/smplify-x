@@ -91,7 +91,6 @@ def main(**args):
     model_params = dict(model_path=args.get('model_folder'),
                         joint_mapper=joint_mapper,
                         create_global_orient=True,
-                        create_body_pose=not args.get('use_vposer'),
                         create_betas=True,
                         create_left_hand_pose=True,
                         create_right_hand_pose=True,
@@ -107,30 +106,19 @@ def main(**args):
     neutral_model = smplx.create(gender='neutral', **model_params)
     female_model = smplx.create(gender='female', **model_params)
 
-    use_hands = args.get('use_hands', True)
-
     # get priors
-    lhand_args = args.copy()
-    lhand_args['num_gaussians'] = args.get('num_pca_comps')
-    left_hand_prior = create_prior(
-        prior_type=args.get('left_hand_prior_type'),
-        dtype=dtype,
-        use_left_hand=True,
-        **lhand_args)
-
     rhand_args = args.copy()
     rhand_args['num_gaussians'] = args.get('num_pca_comps')
     right_hand_prior = create_prior(
         prior_type=args.get('right_hand_prior_type'),
         dtype=dtype,
-        use_right_hand=True,
+        use_right_hand=True, # doesn't matter
         **rhand_args)
 
     shape_prior = create_prior(
         prior_type=args.get('shape_prior_type', 'l2'),
         dtype=dtype, **args)
 
-    angle_prior = create_prior(prior_type='angle', dtype=dtype)
 
     if use_cuda and torch.cuda.is_available():
         device = torch.device('cuda')
@@ -138,10 +126,8 @@ def main(**args):
         female_model = female_model.to(device=device)
         male_model = male_model.to(device=device)
         neutral_model = neutral_model.to(device=device)
-        angle_prior = angle_prior.to(device=device)
         shape_prior = shape_prior.to(device=device)
 
-        left_hand_prior = left_hand_prior.to(device=device)
         right_hand_prior = right_hand_prior.to(device=device)
     else:
         device = torch.device('cpu')
@@ -156,7 +142,6 @@ def main(**args):
 
         img_list = data['img_list']
         keypoints_list = data['keypoints_list']
-        depth = data['depth']
         fn = data['fn']  # frame index 0000
         handoccnet_result = data['handoccnet']
         print('Processing: {}'.format(data['img_path_list']))
@@ -175,19 +160,19 @@ def main(**args):
      
         gender = input_gender
         if gender == 'neutral':
-            body_model = neutral_model
+            hand_model = neutral_model
         elif gender == 'female':
-            body_model = female_model
+            hand_model = female_model
         elif gender == 'male':
-            body_model = male_model
+            hand_model = male_model
 
+        
         fit_multi_view(
             handoccnet_result,
-            depth,
             img_list,
             keypoints_list,
             camera_list,
-            body_model=body_model,
+            hand_model=hand_model, # mano model
             joint_weights=joint_weights,
             dtype=dtype,
             output_folder=output_folder,
@@ -195,36 +180,10 @@ def main(**args):
             out_img_fn_list=out_img_fn_list,
             result_fn=curr_result_fn,
             mesh_fn=curr_mesh_fn,
-            shape_prior=shape_prior,
-            angle_prior=angle_prior,
-            left_hand_prior=left_hand_prior,
-            right_hand_prior=right_hand_prior,
-            jaw_prior=None,
-            expr_prior=None,
-            body_pose_prior=None,
-            
+            right_hand_prior=right_hand_prior,  
+            shape_prior=shape_prior,   
         **args)
 
-        # fit_single_frame(img, 
-        #                     depth,
-        #                     keypoints[[person_id]],
-        #                     body_model=body_model,
-        #                     camera=camera,
-        #                     joint_weights=joint_weights,
-        #                     dtype=dtype,
-        #                     output_folder=output_folder,
-        #                     result_folder=curr_result_folder,
-        #                     out_img_fn=out_img_fn,
-        #                     result_fn=curr_result_fn,
-        #                     mesh_fn=curr_mesh_fn,
-        #                     shape_prior=shape_prior,
-        #                     expr_prior=expr_prior,
-        #                     body_pose_prior=body_pose_prior,
-        #                     left_hand_prior=left_hand_prior,
-        #                     right_hand_prior=right_hand_prior,
-        #                     jaw_prior=jaw_prior,
-        #                     angle_prior=angle_prior,
-        #                     **args)
 
     elapsed = time.time() - start
     time_msg = time.strftime('%H hours, %M minutes, %S seconds',
