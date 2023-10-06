@@ -9,6 +9,8 @@ The code here
 - Does not support penetration penalty loss
 - Fits the global translation of **a single right hand** along with the MANO parameters. 
 
+![sample](./sample.png)
+
 ## Expressive Body Capture: 3D Hands, Face, and Body from a Single Image
 
 [[Project Page](https://smpl-x.is.tue.mpg.de/)] 
@@ -91,6 +93,8 @@ The camera paramter format of `cam_params_final.json` should follow below. The e
 
 The OpenPose keypoint json file should follow this;
 21 joints, an xy pixel location and a confidence score for each joint.
+I (Hongsuk Choi) used the `demo.py` in my [modified Third Party Pytorch implementation](https://github.com/hongsukchoi/OpenPose_3rdParty/tree/hand_demo).
+
 ```
 {"people": [{"person_id": [-1], "hand_right_keypoints_2d": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 636.0, 355.0, 0.06826138362521306, 634.0, 352.0, 0.24912411883997265, 629.0, 352.0, 0.14821653296530712, 628.0, 387.0, 0.06968438968760893, 638.0, 352.0, 0.11099294096493395, 636.0, 350.0, 0.1676580902567366, 634.0, 354.0, 0.12640155653934926, 650.0, 376.0, 0.06368632723842893, 628.0, 378.0, 0.1792734507107525, 626.0, 386.0, 0.15592998130523483, 633.0, 401.0, 0.1534495425003115, 647.0, 392.0, 0.06607456789060961, 621.0, 405.0, 0.18786409020322026, 620.0, 414.0, 0.16799509730481077, 625.0, 430.0, 0.1239485044425237, 644.0, 410.0, 0.05767667422333034, 625.0, 425.0, 0.12532765278956504, 619.0, 433.0, 0.17665766569189145, 623.0, 442.0, 0.13531837027403526]}]}
 ```
