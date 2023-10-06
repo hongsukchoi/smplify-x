@@ -52,7 +52,7 @@ from utils import to_tensor
 
 
 def fit_multi_view(
-        handoccnet_result,
+                     init_handmesh,
                      img_list,
                      keypoints_list,
                      camera_list,
@@ -178,35 +178,33 @@ def fit_multi_view(
                                 **kwargs)
         loss = loss.to(device=device)
         loss_list.append(loss)
-
-    # potentially use depth info from the wrist cam
-    hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=fit_hand_scale)
-    global_hand_translation = torch.tensor([0, 0, 0], dtype=dtype, device=device,requires_grad=True)
     
     with fitting.FittingMonitor(
             batch_size=batch_size, visualize=visualize, **kwargs) as monitor:
 
         data_weight = 2.
-     
+
+        # initial parameters
         orient = hand_model.global_orient.detach().cpu().numpy()
-
-        # Step 2: Optimize the full model
-        final_loss_val = 0
-        opt_start = time.time()
-
+        mano_pose = torch.zeros((1,45), dtype=dtype, device=device)
+        mano_shape = torch.zeros((1,10), dtype=dtype, device=device)
+        hand_scale = torch.tensor([1.0 / 1.0], dtype=dtype, device=device,requires_grad=fit_hand_scale)
+        global_hand_translation = torch.tensor([0, 0, 0], dtype=dtype, device=device,requires_grad=True)     
+        
         # initialize pose here.
-        # new_params = defaultdict(global_orient=orient,
-        #                          hand_pose=hand_mean_pose)
-        use_handoccnet = True
-        if use_handoccnet:
-            orient = torch.tensor(handoccnet_result['mano_pose'][:3], dtype=dtype, device=device).reshape(1,3)
-            mano_pose = torch.tensor(handoccnet_result['mano_pose'][3:], dtype=dtype, device=device).reshape(1,45)
-            mano_shape = torch.tensor(handoccnet_result['mano_shape'][:], dtype=dtype, device=device).reshape(1,10)
-            hand_scale = torch.tensor(handoccnet_result['hand_scale'][:], dtype=dtype, device=device, requires_grad=False)
-            global_hand_translation = torch.tensor(handoccnet_result['hand_translation'], dtype=dtype, device=device, requires_grad=True)
+        if init_handmesh is not None:
+            orient = torch.tensor(init_handmesh['mano_pose'][:3], dtype=dtype, device=device).reshape(1,3)
+            mano_pose = torch.tensor(init_handmesh['mano_pose'][3:], dtype=dtype, device=device).reshape(1,45)
+            mano_shape = torch.tensor(init_handmesh['mano_shape'][:], dtype=dtype, device=device).reshape(1,10)
+            hand_scale = torch.tensor(init_handmesh['hand_scale'][:], dtype=dtype, device=device, requires_grad=False)
+            global_hand_translation = torch.tensor(init_handmesh['hand_translation'], dtype=dtype, device=device, requires_grad=True)
+        
         new_params = defaultdict(global_orient=orient, hand_pose=mano_pose, betas=mano_shape)
         hand_model.reset_params(**new_params) # if not designated, reset to zreo
 
+        # Optimize the full model
+        final_loss_val = 0
+        opt_start = time.time()
         for opt_idx, curr_weights in enumerate(tqdm(opt_weights, desc='Stage')):
             hand_params = list(hand_model.parameters())
 
@@ -275,9 +273,10 @@ def fit_multi_view(
         with open(result_fn, 'wb') as result_file:            
             pickle.dump(result, result_file, protocol=2)
 
-    return 
-    mv = MeshViewer()
-    if save_meshes or visualize:
+    # If you are on headless environment uncomment this and commen meshviewer to use pyrender
+    os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+    # mv = MeshViewer()
+    if visualize: # save rendered hand mesh images
         import pyrender
         import trimesh
 
@@ -305,7 +304,6 @@ def fit_multi_view(
             scene = pyrender.Scene(bg_color=[0.0, 0.0, 0.0, 0.0],
                                 ambient_light=(0.3, 0.3, 0.3))
             
-
             cam_fx = camera.focal_length_x.detach().cpu().numpy().squeeze()
             cam_fy = camera.focal_length_y.detach().cpu().numpy().squeeze()
             cam_c = camera.center.detach().cpu().numpy().squeeze()
@@ -323,35 +321,42 @@ def fit_multi_view(
                 material=material)
             scene.add(mesh, 'mesh')
 
-
             camera_pose = np.eye(4)
-            # camera_pose[:3, :3] = cam_rotation
-            # camera_pose[:3, 3] = cam_trans
-            # camera_pose[:, 1:3] = -camera_pose[:, 1:3]
-            # camera_pose = np.linalg.inv(camera_pose)
-
             camera = pyrender.camera.IntrinsicsCamera(
                 fx=cam_fx, fy=cam_fy, cx=cam_c[0], cy=cam_c[1])
             scene.add(camera, pose=camera_pose)
 
             # custom
-            # # Get the lights from the viewer
-            light_nodes = mv.viewer._create_raymond_lights()
-            for node in light_nodes:
-                scene.add_node(node)
-            mv.close_viewer()
+            # Get the lights from the viewer
+            # light_nodes = mv.viewer._create_raymond_lights()
+            # for node in light_nodes:
+            #     scene.add_node(node)
+            # mv.close_viewer()
+            light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=0.8)
+            light_pose = np.eye(4)
+            light_pose[:3, 3] = [0, -1, 1]
+            scene.add(light, pose=light_pose)
+            light_pose[:3, 3] = [0, 1, 1]
+            scene.add(light, pose=light_pose)
+            light_pose[:3, 3] = [1, 1, 2]
+            scene.add(light, pose=light_pose)
+            
 
             H, W = img.shape[:2]
             r = pyrender.OffscreenRenderer(viewport_width=W,
                                         viewport_height=H,
                                         point_size=1.0)
-            color, _ = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+            # color, _ = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+            # color = color.astype(np.float32) / 255.0
+            # valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
+            # output_img = (color[:, :, :-1] * valid_mask +
+            #             (1 - valid_mask) * img)
+            # depends on the PyopenGL version...
+            color, valid_mask = r.render(scene, flags=pyrender.RenderFlags.RGBA)
+            valid_mask = valid_mask[:, :, np.newaxis]
             color = color.astype(np.float32) / 255.0
-
-            valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
-            output_img = (color[:, :, :-1] * valid_mask +
-                        (1 - valid_mask) * img)
-
+            output_img = (color * valid_mask + (1 - valid_mask) * img)
+            
             img = pil_img.fromarray((output_img * 255).astype(np.uint8))
             img.save(out_img_fn)
 
@@ -378,6 +383,7 @@ def fit_multi_view(
             # img_proj = np.uint8(img_proj*255)
             # cv2.imwrite(out_img_fn, img_proj[:, :, ::-1])
 
-        out_mesh = trimesh.Trimesh(
-            vertices * hand_scale + global_trans, hand_model.faces)
-        out_mesh.export(mesh_fn)
+        if save_meshes:
+            out_mesh = trimesh.Trimesh(
+                vertices * hand_scale + global_trans, hand_model.faces)
+            out_mesh.export(mesh_fn)

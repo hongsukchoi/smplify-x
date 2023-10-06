@@ -54,7 +54,7 @@ class FittingMonitor(object):
     def __enter__(self):
         self.steps = 0
         if self.visualize:
-            self.mv = MeshViewer(hand_color=self.hand_color)
+            self.mv = MeshViewer(body_color=self.hand_color)
         return self
 
     def __exit__(self, exception_type, exception_value, traceback):

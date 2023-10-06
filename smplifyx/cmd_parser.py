@@ -298,6 +298,10 @@ def parse_config(argv=None):
                         type=lambda arg: arg.lower() == 'true',
                         default=False,
                         help='Also fit the scale of the hand.')
+    parser.add_argument('--use_hand_init',
+                        type=lambda arg: arg.lower() == 'true',
+                        default=False,
+                        help='Use the estimated hand mesh as initialization.')
     
     args = parser.parse_args(argv)
 

@@ -143,7 +143,7 @@ def main(**args):
         img_list = data['img_list']
         keypoints_list = data['keypoints_list']
         fn = data['fn']  # frame index 0000
-        handoccnet_result = data['handoccnet']
+        init_handmesh = data['handoccnet']
         print('Processing: {}'.format(data['img_path_list']))
 
         curr_result_folder = osp.join(result_folder, fn)
@@ -168,7 +168,7 @@ def main(**args):
 
         
         fit_multi_view(
-            handoccnet_result,
+            init_handmesh,
             img_list,
             keypoints_list,
             camera_list,

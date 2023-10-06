@@ -81,6 +81,7 @@ def read_hand_keypoints(keypoint_fn, conf_thr=0.12):
 class OpenPoseMano(Dataset):
 
     def __init__(self, data_folder, 
+                 use_hand_init=False,
                  joints_conf_thr=0.12,
                  dtype=torch.float32,
                  model_type='mano',
@@ -97,8 +98,8 @@ class OpenPoseMano(Dataset):
         self.data_folder = data_folder
         self.img_path_list = sorted(glob.glob(osp.join(data_folder,  'cam_0', '*.jpg')))
         # self.keyp_path_list = sorted(glob.glob(osp.join(data_folder,  'cam_0_keypoints', '*_keypoints.json')))
-        self.depth_folder = osp.join(data_folder, 'cam_0_depth')
 
+        self.use_hand_init = use_hand_init
         self.joints_conf_thr = joints_conf_thr
         self.num_joints = 21 
         cam_path = osp.join(data_folder, 'cam_params_final.json') 
@@ -148,11 +149,10 @@ class OpenPoseMano(Dataset):
     def __getitem__(self, idx):
         base_img_path = self.img_path_list[idx]
         # base_keyp_path = self.keyp_path_list[idx]
-        base_depth_path = osp.join(self.depth_folder, osp.basename(base_img_path.replace('jpg', 'png')))
+        # base_depth_path = osp.join(self.depth_folder, osp.basename(base_img_path.replace('jpg', 'png')))
+        # depth = np.asarray(Image.open(base_depth_path))
 
         item = self.read_item(base_img_path)
-        depth = np.asarray(Image.open(base_depth_path))
-        item['depth'] = depth
         item['fn'] = base_img_path.split('_')[-1][:-4]  # 0000 ; frame idx
 
         return item
@@ -191,37 +191,39 @@ class OpenPoseMano(Dataset):
             'img_list': img_list,
         }
 
-        # hand mesh initialiation
-        mano_folder_name = f'cam_0_handoccnet'
-        img_fn = osp.basename(base_img_path)
-        mano_fn = '0' + img_fn[1:-4] + '_3dmesh.json'  #
-        mano_path = osp.join(self.data_folder, mano_folder_name, mano_fn)
-        camera = self.camera_list[0]
-        with open(mano_path, 'r') as f:
-            mano_data = json.load(f)
-        hand_scale = np.array(mano_data['hand_scale'], dtype=float)  # (1)
-        hand_translation = np.array(mano_data['hand_translation'], dtype=float) # (3)
-        mano_pose = np.array(mano_data['mano_pose'], dtype=float) # (48)
-        mano_shape = np.array(mano_data['mano_shape'], dtype=float)  # (10)
+        if self.use_hand_init:
+            # hand mesh initialiation
+            mano_folder_name = f'cam_0_handoccnet'
+            img_fn = osp.basename(base_img_path)
+            mano_fn = '0' + img_fn[1:-4] + '_3dmesh.json'  #
+            mano_path = osp.join(self.data_folder, mano_folder_name, mano_fn)
+            camera = self.camera_list[0]
+            with open(mano_path, 'r') as f:
+                mano_data = json.load(f)
+            hand_scale = np.array(mano_data['hand_scale'], dtype=float)  # (1)
+            hand_translation = np.array(mano_data['hand_translation'], dtype=float) # (3)
+            mano_pose = np.array(mano_data['mano_pose'], dtype=float) # (48)
+            mano_shape = np.array(mano_data['mano_shape'], dtype=float)  # (10)
 
-        # get camera to world transformation
-        rot = camera.rotation.data.cpu().numpy()[0, :, :]
-        trans = camera.translation.data.cpu().numpy()[0, :]
-        rot = rot.T
-        trans = - rot @ trans 
+            # get camera to world transformation
+            rot = camera.rotation.data.cpu().numpy()[0, :, :]
+            trans = camera.translation.data.cpu().numpy()[0, :]
+            rot = rot.T
+            trans = - rot @ trans 
 
-        global_ori, _ = cv2.Rodrigues(mano_pose[:3])
-        global_ori_aa, _ = cv2.Rodrigues(rot @ global_ori)
-        mano_pose[:3] = global_ori_aa[:, 0]
+            global_ori, _ = cv2.Rodrigues(mano_pose[:3])
+            global_ori_aa, _ = cv2.Rodrigues(rot @ global_ori)
+            mano_pose[:3] = global_ori_aa[:, 0]
 
-        hand_translation = rot @ hand_translation + trans
-        output_dict['handoccnet'] = {
-            'hand_scale': hand_scale,
-            'hand_translation': hand_translation,
-            'mano_pose': mano_pose,
-            'mano_shape': mano_shape
-        }
-
+            hand_translation = rot @ hand_translation + trans
+            output_dict['handoccnet'] = {
+                'hand_scale': hand_scale,
+                'hand_translation': hand_translation,
+                'mano_pose': mano_pose,
+                'mano_shape': mano_shape
+            }
+        else:
+            output_dict['handoccnet'] = None
 
         return output_dict
 
