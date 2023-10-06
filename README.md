@@ -65,7 +65,8 @@ ${ROOT}
 |   |   |-- cam_N
 ```
 
-The camera paramter format of `cam_params_final.json` should follow below. The example file is provided in our root.
+The camera paramter format of `cam_params_final.json` should follow below. The example file is provided in our root. I (Hongsuk Choi) used [this](https://github.com/hongsukchoi/MultiCamCalib) for the calibration.
+
 ``` 
 {
     "0": {
